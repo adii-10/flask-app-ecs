@@ -2,15 +2,16 @@ name: Deploy to EKS
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
+    - name: Checkout Code
+      uses: actions/checkout@v4
 
     - name: Configure AWS Credentials
       uses: aws-actions/configure-aws-credentials@v4
@@ -20,22 +21,31 @@ jobs:
         aws-region: ${{ secrets.AWS_REGION }}
 
     - name: Login to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v1
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build & Push Docker Image
+    - name: Build Docker Image
       run: |
         IMAGE=${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
         docker build -t $IMAGE .
+
+    - name: Push to ECR
+      run: |
+        IMAGE=${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
         docker push $IMAGE
 
     - name: Update kubeconfig
       run: |
-        aws eks update-kubeconfig --region ${{ secrets.AWS_REGION }} --name ${{ secrets.EKS_CLUSTER_NAME }}
+        aws eks update-kubeconfig \
+          --name ${{ secrets.EKS_CLUSTER_NAME }} \
+          --region ${{ secrets.AWS_REGION }}
 
-    - name: Deploy updated image to EKS
+    - name: Deploy new image to EKS
       run: |
         IMAGE=${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
-        kubectl set image deployment/inventory-app-deployment inventory-app=$IMAGE -n inventory-app
+        kubectl set image deployment/inventory-app-deployment \
+          inventory-app=$IMAGE \
+          -n inventory-app
 
     - name: Verify Rollout
       run: |

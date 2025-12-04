@@ -2,8 +2,7 @@ name: Deploy to EKS
 
 on:
   push:
-    branches:
-      - main
+    branches: [ "main" ]
 
 jobs:
   deploy:
@@ -23,17 +22,17 @@ jobs:
     - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v1
 
-    - name: Build & Push Image
+    - name: Build & Push Docker Image
       run: |
-        IMAGE_TAG=latest
-        docker build -t ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG .
-        docker push ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:$IMAGE_TAG
+        IMAGE=${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
+        docker build -t $IMAGE .
+        docker push $IMAGE
 
     - name: Update kubeconfig for EKS
-      uses: aws-actions/eks-update-kubeconfig@v1     # <===== FIX HERE
+      uses: aws-actions/amazon-eks-update-kubeconfig@v1   # FIXED
       with:
-        region: ${{ secrets.AWS_REGION }}
         cluster-name: ${{ secrets.EKS_CLUSTER_NAME }}
+        region: ${{ secrets.AWS_REGION }}
 
     - name: Apply Kubernetes manifests
       run: |

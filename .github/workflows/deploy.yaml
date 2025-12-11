@@ -1,55 +1,99 @@
-name: Deploy to EKS
+name: Deploy to ECS
 
 on:
   push:
     branches:
       - main
 
+permissions:
+  id-token: write       # Required for OIDC
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-3
+  AWS_ACCOUNT_ID: 724591800367
+  ECR_REPOSITORY: inventory-test
+  ECS_CLUSTER: inventory-test-cluster
+  ECS_SERVICE: inventory-test-service
+  CONTAINER_NAME: inventory-test
+  IMAGE_TAG: latest
+  TASK_DEFINITION: inventory-test-task
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Code
-      uses: actions/checkout@v4
+      # 1️⃣ Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-    - name: Configure AWS Credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: ${{ secrets.AWS_REGION }}
+      # 2️⃣ Configure AWS credentials via OIDC
+      - name: Configure AWS Credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::724591800367:role/GitHubActionsECSRole
+          role-session-name: GitHubActionsECS
+          aws-region: ${{ env.AWS_REGION }}
 
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v2
+      # 3️⃣ Login to ECR
+      - name: Login to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-    - name: Build Docker Image
-      run: |
-        docker build -t ${{ secrets.ECR_REPOSITORY }} .
+      # 4️⃣ Build, tag, and push Docker image
+      - name: Build, Tag, and Push Docker image
+        run: |
+          echo "[INFO] Building Docker image..."
+          docker build -t $ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REPOSITORY:$IMAGE_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$ECR_REPOSITORY:$IMAGE_TAG
 
-    - name: Tag Docker Image
-      run: |
-        docker tag ${{ secrets.ECR_REPOSITORY }}:latest \
-        ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
+      # 5️⃣ Deploy ECS service
+      - name: Deploy ECS service
+        run: |
+          echo "[INFO] Updating ECS service..."
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service $ECS_SERVICE \
+            --task-definition $TASK_DEFINITION \
+            --force-new-deployment \
+            --region $AWS_REGION
 
-    - name: Push to ECR
-      run: |
-        docker push ${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest
+      # 6️⃣ Fetch ECS public IP and display app URL
+      - name: Fetch ECS Public IP
+        run: |
+          echo "Fetching ECS task public IP..."
+          
+          # Get the first running task ARN
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster $ECS_CLUSTER \
+            --service-name $ECS_SERVICE \
+            --desired-status RUNNING \
+            --region $AWS_REGION \
+            --query "taskArns[0]" \
+            --output text)
 
-    - name: Update kubeconfig
-      run: |
-        aws eks update-kubeconfig \
-          --name ${{ secrets.EKS_CLUSTER_NAME }} \
-          --region ${{ secrets.AWS_REGION }}
+          echo "TASK ARN: $TASK_ARN"
 
-    - name: Deploy to EKS
-      run: |
-        kubectl set image deployment/inventory-app-deployment \
-        inventory-app=${{ secrets.ECR_REGISTRY }}/${{ secrets.ECR_REPOSITORY }}:latest \
-        -n inventory-app
+          # Get ENI ID attached to the task
+          ENI_ID=$(aws ecs describe-tasks \
+            --cluster $ECS_CLUSTER \
+            --tasks $TASK_ARN \
+            --region $AWS_REGION \
+            --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value" \
+            --output text)
 
+          echo "ENI ID: $ENI_ID"
 
-    - name: Verify Rollout
-      run: |
-        kubectl rollout status deployment/inventory-app-deployment -n inventory-app
+          # Get public IP from the ENI
+          PUBLIC_IP=$(aws ec2 describe-network-interfaces \
+            --network-interface-ids $ENI_ID \
+            --region $AWS_REGION \
+            --query "NetworkInterfaces[0].Association.PublicIp" \
+            --output text)
+
+          echo "Public IP: $PUBLIC_IP"
+          echo "APP LIVE AT: http://$PUBLIC_IP:5000"
+
+          # Set output for future steps
+          echo "public_ip=$PUBLIC_IP" >> $GITHUB_OUTPUT
